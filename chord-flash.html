@@ -1,0 +1,1103 @@
+<!DOCTYPE html>
+<!--
+================================================================================
+ 코드 플래시 건반 연습 (아이패드 대응판)
+--------------------------------------------------------------------------------
+ · 화면에 코드 이름(예: Cm7)이 뜨면 → 화면 건반 / 컴퓨터 키보드 / MIDI 건반 / 마이크
+   중 하나로 그 코드를 잡는다 → 맞으면 초록, 틀리면 빨강 → 다음 코드.
+ · 파일 하나(HTML + CSS + JS)로 동작하며, 외부 라이브러리 없이 브라우저 기본 API만 사용:
+     - Web Audio API : 건반 소리·메트로놈 소리 합성, 마이크 소리 주파수 분석
+     - Web MIDI API  : 실제 MIDI 건반 입력 (※ 아이패드 Safari는 미지원 → 아래 설명)
+     - getUserMedia  : 마이크 열기 (※ https 주소에서만 동작)
+     - localStorage  : 설정 저장
+ · [아이패드 수정] 이라고 적힌 주석이 이번에 아이패드용으로 고친 부분입니다.
+================================================================================
+-->
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<!-- 모바일 화면 폭에 맞추기 + 아이패드 노치/홈바 영역까지 화면 사용 -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- [아이패드 수정] 홈 화면에 추가했을 때 전체화면 웹앱처럼 열리도록 (iOS 13.4+ 홈화면 앱에서도 마이크 사용 가능) -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="코드 플래시">
+<title>코드 플래시 건반 연습</title>
+<!-- 글꼴: 코드 이름용 Bodoni Moda, 악보 기호용 Noto Music, 한글용 Noto Sans KR -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:opsz,wght@6..96,500;6..96,700&family=Noto+Music&family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ===== 색상 변수 (밝은 테마) ===== */
+:root{
+  color-scheme:light;
+  --bg:#E4E7EA;--panel:#FAF9F5;--ink:#22252B;--muted:#646971;--line:#C6CAD0;
+  --felt:#9C2236;--brass:#A9781C;--ok:#2B7A4B;--bad:#B3261E;
+  --wk:#FFFEFA;--wk-edge:#B4B8BE;--bk:#25272B;--hint:#F2C14E;
+  box-sizing:border-box;
+  /* 아이패드 상단/하단 안전 영역(노치·홈바)만큼 여백 */
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+/* ===== 어두운 테마 (기기 설정이 다크 모드일 때 자동) ===== */
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --bg:#16181C;--panel:#22252B;--ink:#ECEDEF;--muted:#9BA1A9;--line:#3A3E46;
+    --felt:#E0566A;--brass:#D9A847;--ok:#5FBF83;--bad:#F06A5F;
+    --wk:#E8E5DC;--wk-edge:#7D8087;--bk:#0D0E10;--hint:#F2C14E;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#16181C;--panel:#22252B;--ink:#ECEDEF;--muted:#9BA1A9;--line:#3A3E46;
+  --felt:#E0566A;--brass:#D9A847;--ok:#5FBF83;--bad:#F06A5F;
+  --wk:#E8E5DC;--wk-edge:#7D8087;--bk:#0D0E10;--hint:#F2C14E;
+}
+*,*::before,*::after{box-sizing:border-box}
+/* [아이패드 수정] 가로/세로 회전 시 iOS가 글자 크기를 멋대로 키우지 않게 */
+html{height:100%;scroll-padding-top:env(safe-area-inset-top,0px);-webkit-text-size-adjust:100%;text-size-adjust:100%}
+/* [아이패드 수정] touch-action:manipulation → 두 번 탭 확대(더블탭 줌)와 300ms 탭 지연 제거 */
+body{margin:0;min-height:100%;background:var(--bg);color:var(--ink);touch-action:manipulation;
+  font-family:"Noto Sans KR",system-ui,-apple-system,sans-serif;-webkit-tap-highlight-color:transparent}
+.mus{font-family:"Noto Music","Apple Symbols","Segoe UI Symbol",serif}
+.app{max-width:1180px;margin:0 auto;padding:12px 14px 16px;display:flex;flex-direction:column;gap:12px}
+
+/* ===== 상단 바: 제목 + MIDI/마이크/설정 버튼 + 상태 문구 ===== */
+.top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+h1{font-family:"Bodoni Moda",serif;font-weight:700;font-size:1.45rem;margin:0 auto 0 0}
+/* 버튼: 손가락으로 누르기 쉽게 높이 42px 이상. [아이패드 수정] 길게 눌러도 글자 선택/메뉴가 안 뜨게 */
+.btn{font:inherit;font-size:.92rem;border:1px solid var(--line);background:var(--panel);color:var(--ink);
+  border-radius:999px;padding:8px 15px;min-height:42px;cursor:pointer;touch-action:manipulation;
+  -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;text-decoration:none;display:inline-flex;align-items:center}
+.btn.on{background:var(--felt);border-color:var(--felt);color:#fff}
+.btn.primary{background:var(--ink);border-color:var(--ink);color:var(--panel)}
+.btn[hidden]{display:none}
+.btn:focus-visible,.chip:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid var(--brass);outline-offset:2px}
+.status{width:100%;margin:0;font-size:.84rem;color:var(--muted);line-height:1.5}
+/* 마이크 입력 음량 막대 */
+.meter{width:70px;height:6px;border-radius:3px;background:var(--line);overflow:hidden}
+.meter i{display:block;height:100%;width:0;background:var(--brass)}
+
+/* ===== 본문: 왼쪽 코드 카드 + 오른쪽 오선지 (폭 760px 이하면 위아래로) ===== */
+.stage{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:12px}
+@media (max-width:760px){.stage{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
+.chord-card{display:flex;flex-direction:column;gap:10px;min-height:300px}
+.sub{display:flex;justify-content:space-between;gap:10px;color:var(--muted);font-size:.95rem}
+.timer{font-variant-numeric:tabular-nums}
+.chord-name{font-family:"Bodoni Moda","Noto Music",serif;font-weight:500;line-height:.95;
+  font-size:clamp(4.2rem,10vw,7.4rem);min-height:1em;transition:color .15s}
+.chord-name .q{font-size:.52em}
+.chord-name .sl{font-size:.52em;color:var(--muted)}
+.chord-card.solved .chord-name{color:var(--ok)}   /* 맞혔을 때 초록 */
+.chord-card.wrong .chord-name{color:var(--bad)}   /* 틀렸을 때 빨강 */
+.next{color:var(--muted)}
+.next b{font-family:"Bodoni Moda","Noto Music",serif;font-size:1.4rem;color:var(--ink);font-weight:500;margin-left:6px}
+/* 메트로놈 박 표시 동그라미 */
+.beats{display:flex;gap:9px;align-items:center;min-height:16px;color:var(--muted);font-size:.85rem}
+.beat{width:15px;height:15px;border-radius:50%;border:2px solid var(--brass)}
+.beat.on{background:var(--brass)}
+.beat.first.on{background:var(--felt);border-color:var(--felt)}
+.stats{display:flex;gap:20px;flex-wrap:wrap;font-size:.85rem;color:var(--muted)}
+.stats strong{display:block;font-size:1.35rem;color:var(--ink);font-variant-numeric:tabular-nums;font-weight:500}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:auto}
+.staff-card{display:flex;align-items:center;justify-content:center;padding:8px}
+#staff{width:100%;max-height:330px}
+
+/* ===== 화면 건반 ===== */
+.kb-wrap{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px 10px 8px}
+/* touch-action:none → 건반 위에서 손가락을 움직여도 화면이 스크롤/확대되지 않음(멀티터치 화음 가능) */
+.kb{position:relative;display:flex;height:clamp(150px,30vh,240px);touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+.key{position:relative;cursor:pointer;display:flex;align-items:flex-end;justify-content:center;transition:background-color .06s}
+.wk{flex:1;margin:0 1px;background:var(--wk);border:1px solid var(--wk-edge);border-top:none;border-radius:0 0 7px 7px;
+  padding-bottom:8px;font-size:.72rem;color:#5d6168}
+.bk{position:absolute;top:0;height:61%;z-index:2;background:var(--bk);border-radius:0 0 5px 5px;
+  padding-bottom:6px;font-size:.6rem;color:#c9ccd1}
+/* 힌트: 눌러야 할 건반에 노란 점 */
+.key.hint::after{content:"";position:absolute;left:50%;bottom:30px;transform:translateX(-50%);
+  width:15px;height:15px;border-radius:50%;background:var(--hint);box-shadow:0 0 0 2px rgba(0,0,0,.25)}
+.bk.hint::after{bottom:22px;width:12px;height:12px}
+.key.down{background:var(--felt);color:#fff}
+.key.in{background:var(--ok);color:#fff}      /* 누른 음이 코드 구성음 */
+.key.out{background:var(--bad);color:#fff}    /* 누른 음이 코드에 없는 음 */
+.key.mic{box-shadow:inset 0 -7px 0 var(--brass)} /* 마이크가 들은 음: 아래쪽 금색 줄 */
+.kb-note{margin:6px 2px 0;font-size:.8rem;color:var(--muted)}
+
+/* ===== 설정 시트(오른쪽에서 나오는 패널) ===== */
+.sheet-bg{position:fixed;inset:0;z-index:30;background:rgba(0,0,0,.38);display:none}
+.sheet-bg.open{display:block}
+/* [아이패드 수정] 시트 안 스크롤이 뒤 페이지로 새지 않게(overscroll-behavior) */
+.sheet{position:absolute;top:0;right:0;bottom:0;width:min(430px,100%);background:var(--panel);overflow-y:auto;
+  -webkit-overflow-scrolling:touch;overscroll-behavior:contain;
+  padding:calc(16px + env(safe-area-inset-top,0px)) 18px calc(28px + env(safe-area-inset-bottom,0px))}
+.sheet-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.sheet h2{font-family:"Bodoni Moda",serif;margin:0;font-size:1.3rem}
+fieldset{border:none;border-top:1px solid var(--line);margin:0;padding:14px 0 12px}
+legend{font-weight:700;padding:0 0 6px;font-size:.95rem}
+.row{display:flex;align-items:center;gap:10px;margin:6px 0;font-size:.92rem}
+.row > span:first-child{min-width:92px;color:var(--muted)}
+label.check{display:flex;align-items:center;gap:9px;min-height:38px;font-size:.92rem}
+input[type=checkbox],input[type=radio]{width:20px;height:20px;accent-color:var(--felt)}
+input[type=range]{flex:1;accent-color:var(--felt)}
+/* [아이패드 수정] select 글자가 16px 미만이면 iOS가 탭할 때 화면을 확대함 → 16px로 */
+select{font:inherit;font-size:16px;padding:7px 9px;border-radius:9px;border:1px solid var(--line);background:var(--panel);color:var(--ink)}
+.lvl{font-size:.82rem;color:var(--muted);margin:10px 0 6px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{font-family:"Bodoni Moda","Noto Music",serif;font-size:1rem;border:1px solid var(--line);background:transparent;color:var(--ink);
+  border-radius:8px;padding:6px 11px;min-height:38px;cursor:pointer;touch-action:manipulation}
+.chip[aria-pressed="true"]{background:var(--ink);color:var(--panel);border-color:var(--ink)}
+.small{font-size:.8rem;color:var(--muted);line-height:1.5;margin:6px 0 0}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- 상단: 입력 장치 연결 버튼들과 상태 메시지 -->
+  <header class="top">
+    <h1>코드 플래시</h1>
+    <button class="btn" id="midiBtn">MIDI 연결</button>
+    <!-- [아이패드 수정] MIDIWeb Browser 앱 안에서만 보이는 "블루투스 MIDI" 버튼 -->
+    <button class="btn" id="btMidiBtn" hidden>블루투스 MIDI</button>
+    <!-- [아이패드 수정] 아이패드 Safari 등 MIDI 미지원 브라우저에서, 이 페이지를 MIDIWeb 앱으로 바로 여는 링크 -->
+    <a class="btn" id="midiAppLink" hidden>MIDI 앱에서 열기</a>
+    <button class="btn" id="micBtn">마이크 듣기</button>
+    <span class="meter" id="meter" hidden><i></i></span>
+    <button class="btn" id="setBtn" aria-haspopup="dialog">설정</button>
+    <p class="status" id="status" role="status">화면 건반을 누르거나 MIDI 건반·마이크를 연결해 코드를 잡아 보세요.</p>
+  </header>
+
+  <main class="stage">
+    <!-- 왼쪽 카드: 현재 코드, 다음 코드, 박자 표시, 통계, 동작 버튼 -->
+    <section class="card chord-card" id="card">
+      <div class="sub"><span id="chordSub"></span><span class="timer" id="timer"></span></div>
+      <div class="chord-name" id="chordName" aria-live="polite"></div>
+      <div class="next" id="nextBox">다음<b id="nextName"></b></div>
+      <div class="beats" id="beats"></div>
+      <div class="stats">
+        <div><strong id="stOk">0</strong>맞힘</div>
+        <div><strong id="stBad">0</strong>틀림</div>
+        <div><strong id="stAvg">–</strong>평균 시간</div>
+        <div><strong id="stStreak">0</strong>연속</div>
+      </div>
+      <div class="actions">
+        <button class="btn primary" id="runBtn" hidden>메트로놈 시작</button>
+        <button class="btn" id="skipBtn">넘기기</button>
+        <button class="btn" id="listenBtn">코드 듣기</button>
+        <button class="btn" id="clearBtn" hidden>선택 지우기</button>
+        <button class="btn" id="resetBtn">기록 초기화</button>
+      </div>
+    </section>
+    <!-- 오른쪽 카드: 큰보표(높은음자리+낮은음자리) SVG. JS가 매번 다시 그림 -->
+    <section class="card staff-card">
+      <svg id="staff" viewBox="0 0 420 236" role="img" aria-label="큰보표: 정답 코드와 누른 음"></svg>
+    </section>
+  </main>
+
+  <!-- 화면 건반: C3(48)~B5(83) 3옥타브. JS buildKb()가 건반 div를 만들어 넣음 -->
+  <section class="kb-wrap">
+    <div class="kb" id="kb"></div>
+    <p class="kb-note" id="kbNote"></p>
+  </section>
+</div>
+
+<!-- 설정 시트 -->
+<div class="sheet-bg" id="sheetBg">
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="setTitle">
+    <div class="sheet-head"><h2 id="setTitle">설정</h2><button class="btn" id="closeSet">닫기</button></div>
+
+    <fieldset>
+      <legend>진행 방식</legend>
+      <label class="check"><input type="radio" name="mode" value="wait"> 맞힐 때까지 기다리기</label>
+      <label class="check"><input type="radio" name="mode" value="metro"> 메트로놈 박자에 맞춰 넘어가기</label>
+      <div class="row"><span>템포</span><input type="range" id="bpm" min="30" max="200" step="1"><b id="bpmVal"></b></div>
+      <div class="row"><span>코드당 마디</span><select id="bars"><option>1</option><option>2</option><option>3</option><option>4</option></select></div>
+      <div class="row"><span>박자</span><select id="meterSel"><option value="4">4/4</option><option value="3">3/4</option><option value="2">2/4</option><option value="6">6/8</option></select></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>키</legend>
+      <div class="row"><span>조성</span><select id="keySel"></select></div>
+      <label class="check"><input type="checkbox" id="key7"> 7화음도 섞기 (조성을 고른 경우)</label>
+      <p class="small">조성을 고르면 아래 코드 종류 대신 그 키의 다이아토닉 코드(I~vii°)가 나옵니다.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>코드 종류</legend>
+      <div id="typeBox"></div>
+      <label class="check"><input type="checkbox" id="inv"> 자리바꿈(슬래시 코드) 포함</label>
+      <label class="check"><input type="checkbox" id="strictBass"> 슬래시 코드는 맨 아래 음까지 맞히기</label>
+      <label class="check"><input type="checkbox" id="hideNext"> 다음 코드 숨기기</label>
+    </fieldset>
+
+    <fieldset>
+      <legend>보기</legend>
+      <div class="row"><span>건반 힌트</span><select id="hint"><option value="always">항상 보기</option><option value="wrong">틀렸을 때만</option><option value="never">숨기기</option></select></div>
+      <label class="check"><input type="checkbox" id="staffAns"> 오선지에 정답 음표 보기</label>
+      <label class="check"><input type="checkbox" id="names"> 모든 건반에 음이름 표시</label>
+    </fieldset>
+
+    <fieldset>
+      <legend>입력과 소리</legend>
+      <div class="row"><span>화면 건반</span><select id="touch"><option value="hold">누르는 동안 (여러 손가락)</option><option value="latch">탭해서 고르기 (한 손가락)</option></select></div>
+      <label class="check"><input type="checkbox" id="keySound"> 화면 건반 소리</label>
+      <label class="check"><input type="checkbox" id="midiSound"> MIDI 건반 소리 (스피커 없는 건반용)</label>
+      <label class="check"><input type="checkbox" id="metroSound"> 메트로놈 소리</label>
+      <div class="row"><span>마이크 민감도</span><input type="range" id="sens" min="1" max="10" step="1"><b id="sensVal"></b></div>
+      <p class="small">마이크 인식은 실제 피아노·디지털 피아노 소리를 듣고 음을 추정합니다. 조용한 곳에서 코드를 또렷하게 누르고 1초 정도 유지하세요. 낮은 베이스 음은 잘 안 잡힐 수 있어 마이크만 쓸 때는 맨 아래 음 검사를 생략합니다.</p>
+      <p class="small">아이패드: 마이크는 https 주소에서만 열립니다. MIDI 건반은 Safari에서는 안 되고, App Store의 "MIDIWeb Browser" 앱으로 이 페이지를 열면 됩니다. 무음(벨소리 끔) 상태에서도 소리가 나도록 처리했어요.</p>
+    </fieldset>
+  </div>
+</div>
+<script>
+/* =============================================================================
+   전체 코드를 즉시 실행 함수 (()=>{ ... })() 로 감싸서 전역 변수 오염을 막는다.
+   "use strict" : 실수(선언 안 한 변수 사용 등)를 오류로 잡아 주는 엄격 모드.
+   ============================================================================= */
+(()=>{
+"use strict";
+
+/* =============================================================================
+   0. 환경 감지 [아이패드 수정]
+   - iPadOS 13 이후 Safari는 기본으로 "데스크톱 사이트(맥)"인 척 하므로
+     userAgent만으로는 아이패드를 못 찾는다 → 'MacIntel' + 터치포인트 수로 판별.
+   ============================================================================= */
+const IS_IOS=/iP(hone|od|ad)/.test(navigator.userAgent)||
+  (navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+const HAS_MIDI=typeof navigator.requestMIDIAccess==='function';   // Web MIDI 지원 여부
+const IN_MIDIWEB=!!window.midiweb;                                  // MIDIWeb Browser 앱 안인지
+
+/* =============================================================================
+   1. 음악 데이터
+   - 음 이름은 "글자 번호 l(0=C..6=B)" + "변화표 a(-2=겹내림..+2=겹올림)" 쌍으로 다룬다.
+     이렇게 해야 C♯과 D♭처럼 소리는 같아도 표기가 다른 음을 오선지에 올바르게 그릴 수 있다.
+   - pc(pitch class) = 0~11 의 반음 번호 (C=0, C♯=1 … B=11). 채점은 pc로 한다.
+   - MIDI 번호: 가운데 도(C4) = 60, 반음마다 +1.
+   ============================================================================= */
+const LET=['C','D','E','F','G','A','B'], NAT=[0,2,4,5,7,9,11];   // 글자 → 반음 위치
+const ACC={'-2':'𝄫','-1':'♭','0':'','1':'♯','2':'𝄪'};             // 변화표 기호
+/* 코드 사전: s=표기 접미사, n=한글 이름, iv=[[근음에서 반음 수, 음정 도수], ...]
+   예) 메이저 = 근음(0,1도) + 장3도(4반음,3도) + 완전5도(7반음,5도) */
+const CH={
+  maj:{s:'',n:'메이저',iv:[[0,1],[4,3],[7,5]]},
+  m:{s:'m',n:'마이너',iv:[[0,1],[3,3],[7,5]]},
+  '7':{s:'7',n:'도미넌트 7',iv:[[0,1],[4,3],[7,5],[10,7]]},
+  m7:{s:'m7',n:'마이너 7',iv:[[0,1],[3,3],[7,5],[10,7]]},
+  dim:{s:'dim',n:'디미니시',iv:[[0,1],[3,3],[6,5]]},
+  aug:{s:'aug',n:'오그먼트',iv:[[0,1],[4,3],[8,5]]},
+  maj7:{s:'maj7',n:'메이저 7',iv:[[0,1],[4,3],[7,5],[11,7]]},
+  '6':{s:'6',n:'식스',iv:[[0,1],[4,3],[7,5],[9,6]]},
+  m6:{s:'m6',n:'마이너 식스',iv:[[0,1],[3,3],[7,5],[9,6]]},
+  sus2:{s:'sus2',n:'서스 2',iv:[[0,1],[2,2],[7,5]]},
+  sus4:{s:'sus4',n:'서스 4',iv:[[0,1],[5,4],[7,5]]},
+  add9:{s:'add9',n:'애드 9',iv:[[0,1],[4,3],[7,5],[14,9]]},
+  '9':{s:'9',n:'도미넌트 9',iv:[[0,1],[4,3],[7,5],[10,7],[14,9]]},
+  m9:{s:'m9',n:'마이너 9',iv:[[0,1],[3,3],[7,5],[10,7],[14,9]]},
+  maj9:{s:'maj9',n:'메이저 9',iv:[[0,1],[4,3],[7,5],[11,7],[14,9]]},
+  dim7:{s:'dim7',n:'디미니시 7',iv:[[0,1],[3,3],[6,5],[9,7]]},
+  m7b5:{s:'m7♭5',n:'하프 디미니시',iv:[[0,1],[3,3],[6,5],[10,7]]},
+  aug7:{s:'7♯5',n:'오그먼트 7',iv:[[0,1],[4,3],[8,5],[10,7]]},
+  six9:{s:'6/9',n:'식스 나인',iv:[[0,1],[4,3],[7,5],[9,6],[14,9]]}
+};
+/* 설정 화면의 난이도별 코드 묶음 */
+const LEVELS=[['초급',['maj','m','7','m7','dim','aug']],['중급',['maj7','6','m6','sus2','sus4','add9','9']],['고급',['m9','maj9','dim7','m7b5','aug7','six9']]];
+/* 랜덤 근음 후보 12개 (C, D♭, D, E♭, E, F, F♯, G, A♭, A, B♭, B) */
+const ROOTS=[[0,0],[1,-1],[1,0],[2,-1],[2,0],[3,0],[3,1],[4,0],[5,-1],[5,0],[6,-1],[6,0]];
+/* 마이너 계열: D♭m 대신 C♯m, A♭m 대신 G♯m 처럼 읽기 쉬운 표기로 바꾸려고 사용 */
+const MINORISH=new Set(['m','m7','m6','m9','dim','dim7','m7b5']);
+/* 조성 목록 (근음 [글자,변화표]) */
+const KEYS=[{n:'C',r:[0,0]},{n:'G',r:[4,0]},{n:'D',r:[1,0]},{n:'A',r:[5,0]},{n:'E',r:[2,0]},{n:'B',r:[6,0]},{n:'F♯',r:[3,1]},
+  {n:'D♭',r:[1,-1]},{n:'A♭',r:[5,-1]},{n:'E♭',r:[2,-1]},{n:'B♭',r:[6,-1]},{n:'F',r:[3,0]}];
+/* 장음계 각 음 위의 3화음/7화음 종류와 로마 숫자 */
+const MAJ=[0,2,4,5,7,9,11], TRI=['maj','m','m','maj','maj','m','dim'], SEV=['maj7','m7','m7','maj7','7','m7','m7b5'];
+const ROM=['I','ii','iii','IV','V','vi','vii°'], ROM7=['Imaj7','ii7','iii7','IVmaj7','V7','vi7','viiø7'];
+
+const pcOf=(l,a)=>(NAT[l]+a+120)%12;                         // [글자,변화표] → 0~11
+const normAcc=a=>{while(a>6)a-=12;while(a<-6)a+=12;return a;}; // 변화표를 -6~+6 범위로
+const rand=n=>Math.floor(Math.random()*n);
+const nameOf=(l,a)=>LET[l]+ACC[a];                             // 예) (1,-1) → "D♭"
+
+/* 코드 객체 만들기
+   root=[글자,변화표], type=CH의 키, inv=자리바꿈 번호(0=기본형), roman=로마숫자(조성 모드)
+   반환: tones(구성음), voice(오른손 보이싱: MIDI번호·오선 위치), bass(왼손 베이스음),
+         pcs(정답 pc 집합), id(중복 방지용 이름) 등 */
+function buildChord(root,type,inv,roman){
+  const [L,a]=root, def=CH[type], rpc=pcOf(L,a);
+  // 각 구성음의 글자(l)는 "근음 글자 + 도수-1" → 올바른 철자(예: E♭이지 D♯이 아님)
+  const tones=def.iv.map(([semi,deg])=>{const l=(L+deg-1)%7, pc=(rpc+semi)%12;return {l,ac:normAcc(pc-NAT[l]),pc,semi,deg};});
+  const rootMidi=60+NAT[L]+a;                         // 근음은 C4 근처
+  // step = 오선 위 높이(옥타브*7+글자). 28 = C4
+  const voice=tones.map(t=>({l:t.l,ac:t.ac,pc:t.pc,midi:rootMidi+t.semi,step:28+L+t.deg-1}));
+  for(let i=0;i<inv;i++){voice[i].midi+=12;voice[i].step+=7;}  // 자리바꿈: 아래 음을 한 옥타브 위로
+  voice.sort((x,y)=>x.midi-y.midi);
+  const bt=tones[inv];                                 // 베이스(맨 아래) 음
+  const bass={l:bt.l,ac:bt.ac,pc:bt.pc,step:21+bt.l,midi:48+NAT[bt.l]+bt.ac}; // C3 옥타브
+  const sl=inv?'/'+nameOf(bt.l,bt.ac):'';              // 슬래시 코드 표기 (예: C/E)
+  return {root,type,inv,roman,tones,voice,bass,pcs:new Set(tones.map(t=>t.pc)),bassPc:bt.pc,
+    r:nameOf(L,a),q:def.s,sl,id:nameOf(L,a)+def.s+sl};
+}
+/* 다음에 낼 코드를 랜덤으로 고른다 (직전 코드와 같으면 최대 30번 다시 뽑음) */
+function pickChord(prevId){
+  let c=null;
+  for(let i=0;i<30;i++){
+    let root,type,roman=null;
+    if(S.key>=0){
+      // 조성 모드: 그 키의 장음계 1~7도 중 하나 위에 다이아토닉 코드
+      const k=KEYS[S.key], deg=rand(7), [kl,ka]=k.r, kpc=pcOf(kl,ka);
+      const l=(kl+deg)%7, pc=(kpc+MAJ[deg])%12;
+      root=[l,normAcc(pc-NAT[l])];
+      const use7=S.key7&&Math.random()<.5;
+      type=use7?SEV[deg]:TRI[deg]; roman=use7?ROM7[deg]:ROM[deg];
+    }else{
+      // 자유 모드: 고른 코드 종류 중 하나 + 12개 근음 중 하나
+      const pool=S.types.length?S.types:['maj'];
+      type=pool[rand(pool.length)];
+      root=ROOTS[rand(ROOTS.length)].slice();
+      if(MINORISH.has(type)){ if(root[0]===1&&root[1]===-1)root=[0,1]; else if(root[0]===5&&root[1]===-1)root=[4,1]; }
+    }
+    const n=CH[type].iv.length, has9=CH[type].iv.some(x=>x[1]>=9);
+    const inv=(S.inv&&!has9&&Math.random()<.5)?1+rand(n-1):0;   // 9화음은 자리바꿈 안 함
+    c=buildChord(root,type,inv,roman);
+    if(c.id!==prevId)return c;
+  }
+  return c;
+}
+
+/* =============================================================================
+   2. 설정 (localStorage에 저장 → 다음에 열어도 유지)
+   ============================================================================= */
+const STORE='chordflash-ko-v1';
+const DEF={mode:'wait',bpm:70,bars:1,meter:4,key:-1,key7:false,types:['maj','m'],inv:false,strictBass:true,hideNext:false,
+  hint:'always',staffAns:true,names:false,touch:'hold',keySound:true,midiSound:true,metroSound:true,sens:5};
+let S=Object.assign({},DEF);
+// 사생활 보호 모드 등에서 localStorage가 막혀도 죽지 않게 try/catch
+try{const raw=localStorage.getItem(STORE);if(raw)Object.assign(S,JSON.parse(raw));}catch(e){}
+function save(){try{localStorage.setItem(STORE,JSON.stringify(S));}catch(e){}}
+
+/* =============================================================================
+   3. 상태 변수
+   - 입력은 세 가지 집합(Set)에 "지금 눌려 있는 MIDI 번호"로 모인다:
+       screen  : 화면 건반 + 컴퓨터 키보드
+       midiSet : MIDI 건반
+       micSet  : 마이크가 들은 음
+   - 채점은 이 집합들의 합집합으로 한다 → 입력 방식이 달라도 같은 채점 로직 사용.
+   ============================================================================= */
+const $=id=>document.getElementById(id);
+const card=$('card');
+// [아이패드 수정] setStatus를 위로 올림 (오디오 초기화 단계에서도 메시지를 띄울 수 있게)
+const setStatus=t=>{$('status').textContent=t;};
+let cur=null,nxt=null,solved=false,wrongCounted=false,showHintNow=false,t0=performance.now(),armSig=null,wrongT=0;
+const screen=new Set(),midiSet=new Set(),micSet=new Set();
+const ST={ok:0,bad:0,times:[],streak:0};   // 통계
+let running=false,schedT=0,beat=0,nextT=0; // 메트로놈 상태
+
+const sig=s=>[...s].sort((a,b)=>a-b).join(',');            // 집합 → 비교용 문자열
+const activeSet=()=>new Set([...screen,...midiSet,...micSet]); // 모든 입력
+const physicalSet=()=>new Set([...screen,...midiSet]);         // 손으로 누른 입력만(마이크 제외)
+
+/* =============================================================================
+   4. 오디오 (Web Audio API)
+   그래프 구조:
+     [오실레이터 삼각파 f] ─┐
+     [오실레이터 사인파 2f]→[게인 .22]─┴→[로우패스 필터]→[음별 게인(엔벨로프)]→[master .55]→ 스피커
+   - 음마다 오실레이터 2개를 새로 만들고, 게인을 빠르게 올렸다 천천히 줄여 피아노 비슷한 감쇠를 낸다.
+   - 브라우저는 "사용자가 탭/클릭한 순간"에만 소리를 켤 수 있다(자동재생 정책).
+   ============================================================================= */
+let ac=null,master=null;const voices=new Map();   // voices: MIDI번호 → 지금 울리는 음
+let micOn=false;                                  // (마이크 상태: 오디오 세션 종류 결정에 필요해서 위로 올림)
+
+/* [아이패드 수정] iOS 오디오 세션 종류 지정 (Safari 16.4+/iPadOS 17+)
+   - 기본값에서는 Web Audio가 "벨소리 채널"로 나가서, 아이패드 측면 무음/벨소리 끔 상태면 소리가 안 난다.
+   - 'playback'        : 음악 재생처럼 취급 → 무음 모드여도 소리 남
+   - 'play-and-record' : 마이크를 켤 때 필요(재생+녹음 동시)
+   지원 안 하는 브라우저(크롬 등)에는 navigator.audioSession 자체가 없으므로 그냥 넘어간다. */
+function setSession(type){
+  try{if(navigator.audioSession&&navigator.audioSession.type!==type)navigator.audioSession.type=type;}catch(e){}
+}
+
+/* 오디오 컨텍스트를 (없으면) 만들고, 멈춰 있으면 깨운다. 모든 소리 내기 전에 호출. */
+function ensureAudio(){
+  if(!ac){
+    const C=window.AudioContext||window.webkitAudioContext;   // 옛 iOS는 webkit 접두사
+    if(!C){setStatus('이 브라우저는 Web Audio를 지원하지 않아 소리를 낼 수 없어요.');return null;}
+    setSession(micOn?'play-and-record':'playback');            // [아이패드 수정] 컨텍스트 만들기 전에 세션 지정
+    // sampleRate를 고정하지 않는다 → 기기 기본값 사용(iOS는 48000/44100이 바뀔 수 있음)
+    try{ac=new C({latencyHint:'interactive'});}catch(e){ac=new C();}
+    master=ac.createGain();master.gain.value=.55;master.connect(ac.destination);
+  }
+  /* [아이패드 수정] 원래는 'suspended'일 때만 resume 했지만,
+     iOS Safari에는 전화·시리·다른 앱 때문에 생기는 'interrupted' 상태가 따로 있다.
+     → 'running'이 아니면(닫힌 경우 제외) 항상 resume 시도. 실패해도 오류로 죽지 않게 catch. */
+  if(ac.state!=='running'&&ac.state!=='closed'){
+    try{const p=ac.resume();if(p&&p.catch)p.catch(()=>{});}catch(e){}
+  }
+  return ac;
+}
+
+/* [아이패드 수정] iOS 오디오 잠금 해제
+   HTML 표준상 터치 입력에서는 'pointerdown'이 "사용자 활성화"로 인정되지 않고
+   'touchend'/'pointerup'/'click'만 인정된다. 그래서 아이패드에서 화면 건반을 처음 눌렀을 때
+   (pointerdown 안에서 만든) AudioContext가 suspended로 남아 첫 소리가 안 나는 문제가 있었다.
+   → 화면 어디든 손을 뗄 때마다, 컨텍스트가 있고 멈춰 있으면 깨우고 무음 버퍼를 한 번 재생해 출력 경로를 연다.
+   (컨텍스트가 아직 없으면 만들지 않는다 → 그냥 화면만 보는 사람의 음악 앱을 멈추지 않기 위해) */
+let unlocked=false;
+function unlockAudio(){
+  if(!ac||ac.state==='running'&&unlocked)return;
+  ensureAudio();
+  if(!unlocked){
+    try{const b=ac.createBuffer(1,1,ac.sampleRate),s=ac.createBufferSource();s.buffer=b;s.connect(ac.destination);s.start(0);unlocked=true;}catch(e){}
+  }
+}
+['touchend','pointerup','click','keydown'].forEach(ev=>document.addEventListener(ev,unlockAudio,{capture:true,passive:true}));
+/* [아이패드 수정] 다른 앱 갔다 돌아오거나 화면 잠금 해제 후 오디오 재개 시도 */
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&ac)ensureAudio();});
+
+/* 음 하나 켜기. m=MIDI번호, vel=세기(0~1), auto=true면 1.1초 후 자동으로 끔 */
+function noteOn(m,vel=.7,auto=false){
+  if(!ensureAudio())return;noteOff(m,true);               // 같은 음이 울리고 있으면 먼저 짧게 끔
+  const t=ac.currentTime,f=440*Math.pow(2,(m-69)/12);     // MIDI → 주파수 (A4=69=440Hz)
+  const g=ac.createGain();
+  // 엔벨로프: 8ms 만에 올라가고 → 0.45초까지 빠르게 줄고 → 3초에 걸쳐 사라짐
+  g.gain.setValueAtTime(.0001,t);g.gain.linearRampToValueAtTime(.2*vel,t+.008);
+  g.gain.exponentialRampToValueAtTime(.06*vel+.0001,t+.45);g.gain.exponentialRampToValueAtTime(.0001,t+3);
+  const lp=ac.createBiquadFilter();lp.type='lowpass';lp.frequency.value=Math.min(9000,f*7); // 날카로움 줄이기
+  const o1=ac.createOscillator();o1.type='triangle';o1.frequency.value=f;   // 기본음
+  const o2=ac.createOscillator();o2.type='sine';o2.frequency.value=f*2;     // 한 옥타브 위 배음
+  const g2=ac.createGain();g2.gain.value=.22;
+  o1.connect(lp);o2.connect(g2);g2.connect(lp);lp.connect(g);g.connect(master);
+  o1.start(t);o2.start(t);o1.stop(t+3.1);o2.stop(t+3.1);
+  const v={g,o1,o2};voices.set(m,v);
+  if(auto)setTimeout(()=>{if(voices.get(m)===v)noteOff(m);},1100);
+}
+/* 음 끄기. quick=true면 30ms 만에, 아니면 250ms에 걸쳐 자연스럽게 */
+function noteOff(m,quick){
+  const v=voices.get(m);if(!v||!ac)return;voices.delete(m);
+  const t=ac.currentTime;
+  try{v.g.gain.cancelScheduledValues(t);v.g.gain.setValueAtTime(Math.max(v.g.gain.value,.0001),t);
+    v.g.gain.exponentialRampToValueAtTime(.0001,t+(quick?.03:.25));v.o1.stop(t+.3);v.o2.stop(t+.3);}catch(e){}
+}
+/* 메트로놈 "틱" 소리. t=재생할 정확한 오디오 시각, accent=첫 박이면 높은 음 */
+function click(t,accent){
+  const o=ac.createOscillator(),g=ac.createGain();o.type='square';o.frequency.value=accent?1760:1100;
+  g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(accent?.22:.12,t+.002);g.gain.exponentialRampToValueAtTime(.0001,t+.05);
+  o.connect(g);g.connect(master);o.start(t);o.stop(t+.06);
+}
+/* "코드 듣기": 베이스부터 35ms 간격으로 아르페지오처럼 재생 */
+function playChord(c){
+  if(!c||!ensureAudio())return;
+  [c.bass.midi,...c.voice.map(v=>v.midi)].forEach((m,i)=>setTimeout(()=>noteOn(m,.55,true),i*35));
+}
+
+/* =============================================================================
+   5. 화면 건반
+   ============================================================================= */
+const LO=48,HI=83,isBlack=m=>[1,3,6,8,10].includes(m%12);   // C3~B5, 검은건반 판별
+const kb=$('kb');let keyEls=new Map();                        // MIDI번호 → 건반 div
+/* 흰 건반은 flex로 균등 배치, 검은 건반은 그 위에 %위치로 절대 배치 */
+function buildKb(){
+  kb.innerHTML='';keyEls=new Map();
+  const whites=[];for(let m=LO;m<=HI;m++)if(!isBlack(m))whites.push(m);
+  const W=100/whites.length;
+  whites.forEach(m=>{const el=document.createElement('div');el.className='key wk';el.dataset.m=m;kb.appendChild(el);keyEls.set(m,el);});
+  for(let m=LO;m<=HI;m++)if(isBlack(m)){
+    const el=document.createElement('div');el.className='key bk';el.dataset.m=m;
+    const idx=whites.indexOf(m-1);el.style.left=((idx+1)*W-W*.31)+'%';el.style.width=(W*.62)+'%';
+    kb.appendChild(el);keyEls.set(m,el);
+  }
+  labelKeys();
+}
+const SHARP=['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
+/* 건반 글자(C3, C4 … 또는 모든 음이름)와 아래 안내문 */
+function labelKeys(){
+  keyEls.forEach((el,m)=>{
+    const oct=Math.floor(m/12)-1;
+    if(m%12===0)el.textContent='C'+oct;
+    else el.textContent=S.names?(isBlack(m)?'':SHARP[m%12]):'';
+  });
+  $('kbNote').textContent=S.touch==='latch'
+    ?'건반을 하나씩 탭해서 고르면 자동으로 채점돼요. 다시 탭하면 빠집니다.'
+    :'건반을 동시에 눌러 코드를 잡으세요. 맥·PC나 키보드를 연결한 아이패드에서는 A W S E D F T G Y H U J K 키도 C4부터 소리 나요.';
+}
+/* 건반 색칠: 초록(맞는 음)/빨강(틀린 음)/금색 줄(마이크)/노란 점(힌트) */
+function renderKeys(act){
+  const hintOn=cur&&!solved&&(S.hint==='always'||showHintNow);
+  const hintSet=new Set(hintOn?[cur.bass.midi,...cur.voice.map(v=>v.midi)]:[]);
+  keyEls.forEach((el,m)=>{
+    const down=act.has(m)&&(screen.has(m)||midiSet.has(m));
+    const inC=cur&&cur.pcs.has(m%12);
+    el.classList.toggle('in',down&&inC);
+    el.classList.toggle('out',down&&!inC);
+    el.classList.toggle('mic',micSet.has(m));
+    el.classList.toggle('hint',hintSet.has(m)&&!down);
+  });
+}
+/* 포인터 이벤트(마우스·손가락·펜 공통). 손가락마다 pointerId가 달라서 여러 손가락 화음이 된다.
+   ptr: pointerId → 누르고 있는 MIDI번호 */
+const ptr=new Map();
+kb.addEventListener('pointerdown',e=>{
+  const k=e.target.closest('.key');if(!k)return;e.preventDefault();ensureAudio();
+  const m=+k.dataset.m;
+  if(S.touch==='latch'){   // 탭해서 고르기 모드: 누를 때마다 넣었다/뺐다
+    if(screen.has(m))screen.delete(m);else{screen.add(m);if(S.keySound)noteOn(m,.7,true);}
+    evaluate();return;
+  }
+  ptr.set(e.pointerId,m);screen.add(m);if(S.keySound)noteOn(m);evaluate();
+});
+/* 손을 떼거나(pointerup), iOS가 제스처로 가로챈 경우(pointercancel) 음을 끈다 */
+function ptrUp(e){
+  if(!ptr.has(e.pointerId))return;const m=ptr.get(e.pointerId);ptr.delete(e.pointerId);
+  if(![...ptr.values()].includes(m)){screen.delete(m);noteOff(m);}
+  evaluate();
+}
+window.addEventListener('pointerup',ptrUp);window.addEventListener('pointercancel',ptrUp);
+kb.addEventListener('contextmenu',e=>e.preventDefault());   // 길게 누를 때 메뉴 방지
+
+/* 컴퓨터 키보드(또는 아이패드 매직 키보드) → 음: a=C4, w=C♯4, s=D4 ... */
+const KMAP={a:60,w:61,s:62,e:63,d:64,f:65,t:66,g:67,y:68,h:69,u:70,j:71,k:72,o:73,l:74};
+document.addEventListener('keydown',e=>{
+  if(e.target.closest&&e.target.closest('input,select,textarea')||e.metaKey||e.ctrlKey)return;
+  if(e.key==='Escape'){closeSheet();return;}
+  if(!e.key)return;
+  const m=KMAP[e.key.toLowerCase()];if(m===undefined||e.repeat)return;
+  ensureAudio();screen.add(m);if(S.keySound)noteOn(m);evaluate();
+});
+document.addEventListener('keyup',e=>{
+  if(!e.key)return;
+  const m=KMAP[e.key.toLowerCase()];if(m===undefined||S.touch==='latch')return;
+  screen.delete(m);noteOff(m);evaluate();
+});
+
+/* =============================================================================
+   6. 오선지 (SVG 문자열을 만들어 innerHTML로 통째로 교체)
+   - step: 오선 위 높이 단위(한 칸/한 줄 = 1 step = 6px)
+   ============================================================================= */
+const svg=$('staff');
+const TB=98,BB=194; /* 높은음자리 맨 아래줄 E4, 낮은음자리 맨 아래줄 G2 의 y좌표 */
+const yOf=(step,st)=>st==='t'?TB-(step-30)*6:BB-(step-18)*6;
+/* 오선 밖 음에 필요한 덧줄 위치 계산 */
+function ledgerSteps(step,st){
+  const out=[];
+  if(st==='t'){for(let s=28;s>=step;s-=2)out.push(s);for(let s=40;s<=step;s+=2)out.push(s);}
+  else{for(let s=16;s>=step;s-=2)out.push(s);for(let s=28;s<=step;s+=2)out.push(s);}
+  return out;
+}
+/* 음표 묶음 그리기 (2도로 붙은 음은 옆으로 비켜 그림, 변화표는 왼쪽에 엇갈려 배치) */
+function drawNotes(notes,cx,color){
+  let out='';
+  ['t','b'].forEach(st=>{
+    const ns=notes.filter(n=>n.staff===st).sort((a,b)=>a.step-b.step||a.ac-b.ac);
+    let prev=null,prevSh=false;
+    const pos=ns.map(n=>{let sh=false;if(prev&&n.step-prev.step<=1&&!prevSh)sh=true;prevSh=sh;prev=n;return Object.assign({},n,{x:cx+(sh?14:0)});});
+    const led=new Map();
+    pos.forEach(p=>ledgerSteps(p.step,st).forEach(s=>{const w=led.get(s)||[cx-11,cx+11];w[1]=Math.max(w[1],p.x+11);led.set(s,w);}));
+    led.forEach((w,s)=>{const y=yOf(s,st);out+=`<line x1="${w[0]}" x2="${w[1]}" y1="${y}" y2="${y}" stroke="var(--ink)" stroke-width="1.3"/>`;});
+    pos.forEach(p=>{const y=yOf(p.step,st);
+      out+=`<ellipse cx="${p.x}" cy="${y}" rx="7.2" ry="5.1" fill="${color}"/>`+
+           `<ellipse cx="${p.x}" cy="${y}" rx="3.4" ry="2.5" transform="rotate(48 ${p.x} ${y})" fill="var(--panel)"/>`;});
+    pos.filter(p=>p.ac!==0).sort((a,b)=>b.step-a.step).forEach((p,i)=>{
+      const ax=cx-19-(i%3)*10,y=yOf(p.step,st);
+      out+=`<text x="${ax}" y="${y+(p.ac<0?3:5)}" font-size="17" text-anchor="middle" fill="${color}" class="mus">${ACC[p.ac]}</text>`;
+    });
+  });
+  return out;
+}
+/* 누른 MIDI 번호를 악보 철자로: 코드 구성음이면 코드 철자를, 아니면 ♯/♭ 중 어울리는 쪽 */
+function spellMidi(m){
+  const pc=m%12;let l,ac;
+  const t=cur&&cur.tones.find(t=>t.pc===pc);
+  if(t){l=t.l;ac=t.ac;}
+  else{
+    const flat=cur&&(cur.root[1]<0||(cur.root[0]===3&&cur.root[1]===0));
+    const SH=[[0,0],[0,1],[1,0],[1,1],[2,0],[3,0],[3,1],[4,0],[4,1],[5,0],[5,1],[6,0]];
+    const FL=[[0,0],[1,-1],[1,0],[2,-1],[2,0],[3,0],[4,-1],[4,0],[5,-1],[5,0],[6,-1],[6,0]];
+    [l,ac]=(flat?FL:SH)[pc];
+  }
+  const oct=Math.floor((m-ac)/12)-1;
+  return {step:oct*7+l,ac,staff:m>=60?'t':'b'};   // C4 이상은 높은음자리, 아래는 낮은음자리
+}
+/* 큰보표 전체 그리기: 왼쪽=정답, 오른쪽=지금 누른 음 */
+function renderStaff(act){
+  let s='';
+  const line=(y)=>`<line x1="40" x2="410" y1="${y}" y2="${y}" stroke="var(--ink)" stroke-width="1"/>`;
+  for(let i=0;i<5;i++){s+=line(50+i*12);s+=line(146+i*12);}
+  s+=`<line x1="40" x2="40" y1="50" y2="194" stroke="var(--ink)" stroke-width="1.4"/>`;
+  s+=`<line x1="410" x2="410" y1="50" y2="194" stroke="var(--ink)" stroke-width="1.4"/>`;
+  s+=`<path d="M34 50 Q26 50 27 70 L27 108 Q27 122 21 122 Q27 122 27 136 L27 176 Q26 194 34 194" fill="none" stroke="var(--ink)" stroke-width="2.4"/>`;
+  s+=`<text x="46" y="98" font-size="48" fill="var(--ink)" class="mus">𝄞</text>`;
+  s+=`<text x="46" y="194" font-size="48" fill="var(--ink)" class="mus">𝄢</text>`;
+  s+=`<line x1="255" x2="255" y1="50" y2="194" stroke="var(--line)" stroke-width="1" stroke-dasharray="3 4"/>`;
+  if(cur&&(S.staffAns||showHintNow||solved)){
+    const notes=cur.voice.map(v=>({step:v.step,ac:v.ac,staff:'t'})).concat([{step:cur.bass.step,ac:cur.bass.ac,staff:'b'}]);
+    s+=drawNotes(notes,175,solved?'var(--ok)':'var(--ink)');
+  }else if(cur){
+    s+=`<text x="175" y="128" font-size="13" text-anchor="middle" fill="var(--muted)">숨김</text>`;
+  }
+  const played=[...act].sort((a,b)=>a-b).map(spellMidi);
+  if(played.length)s+=drawNotes(played,335,'var(--felt)');
+  s+=`<text x="175" y="226" font-size="12.5" text-anchor="middle" fill="var(--muted)">정답</text>`;
+  s+=`<text x="335" y="226" font-size="12.5" text-anchor="middle" fill="var(--muted)">누른 음</text>`;
+  svg.innerHTML=s;
+}
+
+/* =============================================================================
+   7. 채점
+   - 옥타브는 무시하고 pc(0~11)만 비교 → 어느 자리에서 잡아도 정답.
+   - 'match'  : 구성음 전부 + 남는 음 없음 + (슬래시 코드면) 맨 아래 음도 맞음
+   - 'wrong'  : 코드에 없는 음이 섞임, 또는 음은 다 맞는데 베이스가 틀림
+   - 'partial': 아직 덜 누름
+   ============================================================================= */
+function judge(set){
+  if(!set.size||!cur)return 'empty';
+  const pcs=new Set([...set].map(m=>m%12));
+  const all=[...cur.pcs].every(p=>pcs.has(p)), extra=[...pcs].some(p=>!cur.pcs.has(p));
+  const micOnly=micSet.size&&!screen.size&&!midiSet.size;   // 마이크만 쓰면 베이스 검사 생략
+  const needBass=cur.inv>0&&S.strictBass&&!micOnly;
+  const bassOk=!needBass||Math.min(...set)%12===cur.bassPc;
+  if(all&&!extra&&bassOk)return 'match';
+  if(extra||(all&&!bassOk))return 'wrong';
+  return 'partial';
+}
+/* 입력이 바뀔 때마다 호출: 화면 갱신 → 정답이면 onSolved → 틀렸으면 0.32초 뒤 "틀림" 1회 기록
+   armSig: 새 코드가 떴을 때 이전 코드를 아직 누르고 있는 상태는 틀림으로 세지 않기 위한 장치 */
+function evaluate(){
+  const act=activeSet();renderKeys(act);renderStaff(act);
+  if(!cur||solved)return;
+  if(S.mode==='metro'&&!running)return;
+  if(judge(act)==='match'){clearTimeout(wrongT);onSolved();return;}
+  const phys=physicalSet(),sg=sig(phys);
+  if(armSig!==null&&sg!==armSig)armSig=null;
+  if(!phys.size){wrongCounted=false;card.classList.remove('wrong');clearTimeout(wrongT);return;}
+  if(armSig===null&&judge(phys)==='wrong'){
+    clearTimeout(wrongT);
+    wrongT=setTimeout(()=>{   // 손가락이 순서대로 닿는 순간의 잠깐 틀린 상태는 무시(0.32초 유예)
+      if(solved||wrongCounted||judge(physicalSet())!=='wrong')return;
+      wrongCounted=true;ST.bad++;ST.streak=0;
+      if(S.hint==='wrong')showHintNow=true;
+      card.classList.add('wrong');renderStats();const a=activeSet();renderKeys(a);renderStaff(a);
+    },320);
+  }
+}
+/* 정답 처리: 통계 기록, 초록 표시, 기다리기 모드면 0.65초 뒤 다음 코드 */
+function onSolved(){
+  solved=true;const t=(performance.now()-t0)/1000;
+  ST.ok++;ST.streak++;ST.times.push(t);if(ST.times.length>30)ST.times.shift();
+  card.classList.remove('wrong');card.classList.add('solved');
+  renderStats();const a=activeSet();renderKeys(a);renderStaff(a);
+  $('timer').textContent=t.toFixed(1)+'초';
+  if(S.mode==='wait')setTimeout(()=>{if(solved&&S.mode==='wait')newChord();},650);
+}
+function renderStats(){
+  $('stOk').textContent=ST.ok;$('stBad').textContent=ST.bad;$('stStreak').textContent=ST.streak;
+  $('stAvg').textContent=ST.times.length?(ST.times.reduce((a,b)=>a+b,0)/ST.times.length).toFixed(1)+'초':'–';
+}
+
+/* =============================================================================
+   8. 코드 전환
+   ============================================================================= */
+/* 미리 뽑아 둔 "다음 코드"를 현재로 올리고, 새 "다음 코드"를 뽑는다 */
+function newChord(){
+  cur=nxt&&validFor(nxt)?nxt:pickChord(cur&&cur.id);
+  nxt=pickChord(cur.id);
+  solved=false;wrongCounted=false;showHintNow=false;t0=performance.now();clearTimeout(wrongT);
+  if(S.touch==='latch')screen.clear();
+  armSig=sig(physicalSet());
+  card.classList.remove('solved','wrong');
+  renderChord();evaluate();
+}
+/* 설정이 바뀐 뒤에도 그 코드가 여전히 유효한지 */
+function validFor(c){
+  if(S.key>=0)return c.roman!==null;
+  return c.roman===null&&S.types.includes(c.type)&&(S.inv||c.inv===0);
+}
+function renderChord(){
+  if(!cur)return;
+  $('chordName').innerHTML=`${cur.r}<span class="q">${cur.q}</span>${cur.sl?`<span class="sl">${cur.sl}</span>`:''}`;
+  let sub;
+  if(cur.roman)sub=`${KEYS[S.key].n} 메이저 키의 ${cur.roman}`;
+  else sub=CH[cur.type].n+(cur.inv?`, ${cur.inv}전위`:'');
+  $('chordSub').textContent=sub;
+  $('nextBox').hidden=S.hideNext;
+  $('nextName').textContent=nxt?nxt.r+nxt.q+nxt.sl:'';
+}
+
+/* =============================================================================
+   9. 메트로놈 ("앞서 예약하기" 방식)
+   - 25ms마다 sched()가 돌면서, 앞으로 0.12초 안에 올 박을 오디오 시계(ac.currentTime)에 미리 예약.
+   - setTimeout만 쓰면 박이 흔들리지만, 오디오 시계 예약은 샘플 단위로 정확하다.
+   - 화면 갱신(onBeat)은 그 박 시각에 맞춰 setTimeout으로.
+   ============================================================================= */
+function renderBeats(idx=-1,bar=0){
+  const b=$('beats');
+  if(S.mode!=='metro'){b.innerHTML='';return;}
+  let h='';for(let i=0;i<S.meter;i++)h+=`<span class="beat${i===0?' first':''}${i===idx?' on':''}"></span>`;
+  if(S.bars>1)h+=`<span>${bar}/${S.bars}마디</span>`;
+  b.innerHTML=h;
+}
+function startMetro(){
+  if(!ensureAudio())return;running=true;beat=0;nextT=ac.currentTime+.2;
+  nxt=null;newChord();clearInterval(schedT);schedT=setInterval(sched,25);
+  $('runBtn').textContent='정지';
+}
+function stopMetro(){running=false;clearInterval(schedT);$('runBtn').textContent='메트로놈 시작';renderBeats();}
+function sched(){
+  const spb=60/S.bpm;   // 1박 길이(초)
+  /* [아이패드 수정] 화면 잠금/앱 전환으로 오디오 시계가 멈췄다 돌아오면 밀린 박이 한꺼번에 울리지 않도록 */
+  if(nextT<ac.currentTime-.5)nextT=ac.currentTime+.05;
+  while(nextT<ac.currentTime+.12){
+    const b=beat,inBar=b%S.meter;
+    if(S.metroSound)click(nextT,inBar===0);
+    setTimeout(()=>onBeat(b),Math.max(0,(nextT-ac.currentTime)*1000));
+    nextT+=spb;beat++;
+  }
+}
+/* 박마다: 정해진 마디 수가 지나면 다음 코드 (못 맞혔으면 틀림 +1) */
+function onBeat(b){
+  if(!running)return;
+  const per=S.meter*S.bars;
+  if(b>0&&b%per===0){
+    if(!solved&&!wrongCounted){ST.bad++;ST.streak=0;renderStats();}
+    newChord();
+  }
+  renderBeats(b%S.meter,Math.floor((b%per)/S.meter)+1);
+}
+
+/* =============================================================================
+   10. MIDI (Web MIDI API)
+   흐름: [MIDI 연결] 탭 → navigator.requestMIDIAccess() → 입력 포트마다 onmidimessage 연결
+         → 메시지 [상태바이트, 음번호, 세기] 해석 → midiSet에 넣고/빼고 → evaluate()
+   ※ 아이패드: Safari·Chrome·Edge·Firefox 모두 애플 정책상 WebKit 엔진이라 Web MIDI가 없다.
+     대신 App Store의 "MIDIWeb Browser"(또는 "Web MIDI Browser") 앱이 이 API를 끼워 넣어 주므로
+     그 앱 안에서 이 페이지를 열면 아래 코드가 그대로 동작한다.
+   ============================================================================= */
+let midiAccess=null;
+/* 실패 원인 진단 문자열 (권한 정책·프레임 여부·주소) */
+function diag(feat,err){
+  const fp=document.permissionsPolicy||document.featurePolicy;
+  let pol='확인 불가';
+  try{if(fp&&fp.allowsFeature)pol=fp.allowsFeature(feat)?'허용':'차단';}catch(e){}
+  let inFrame='확인 불가';try{inFrame=window.top!==window.self?'예':'아니오';}catch(e){inFrame='예';}
+  return `[${err&&err.name}] ${err&&err.message} / 페이지 정책: ${pol} / 프레임 안: ${inFrame} / 주소: ${location.protocol}//${location.hostname}`;
+}
+/* [아이패드 수정] 미지원 브라우저용 안내 버튼 준비 */
+(function prepMidiUi(){
+  if(!HAS_MIDI&&IS_IOS){
+    $('midiBtn').textContent='MIDI (앱 필요)';
+    // https 로 열려 있을 때만 MIDIWeb 앱 바로 열기 링크 표시 (file:// 주소는 앱이 열 수 없음)
+    if(location.protocol==='https:'){
+      const a=$('midiAppLink');
+      a.href='midiweb://open-url?url='+encodeURIComponent(location.href);
+      a.hidden=false;
+    }
+  }
+  // MIDIWeb 앱이 블루투스 MIDI 설정 창 API를 제공하면 버튼 표시
+  if(IN_MIDIWEB&&typeof window.midiweb.openBluetoothMIDI==='function'&&window.midiweb.bluetoothMIDIAvailable!==false){
+    const b=$('btMidiBtn');b.hidden=false;
+    b.onclick=()=>{let ok=false;try{ok=window.midiweb.openBluetoothMIDI();}catch(e){}
+      if(!ok)setStatus('블루투스 MIDI 설정 창을 열지 못했어요. MIDIWeb 앱 메뉴의 Bluetooth 설정을 이용해 주세요.');};
+  }
+})();
+
+async function connectMidi(){
+  ensureAudio();   // 버튼 탭(사용자 동작) 안에서 오디오도 같이 깨워 둔다
+  if(!HAS_MIDI){
+    setStatus(IS_IOS
+      ?'아이패드의 Safari·Chrome 등 모든 브라우저는 애플 정책상 같은 엔진(WebKit)을 써서 MIDI 건반을 직접 받지 못해요. App Store의 무료 앱 "MIDIWeb Browser"(또는 "Web MIDI Browser")를 설치하고 그 앱에서 이 페이지의 https 주소를 열면 MIDI 건반을 쓸 수 있어요. 지금은 "마이크 듣기"나 화면 건반으로 연습할 수 있어요.'
+      :'이 브라우저는 MIDI 건반을 지원하지 않아요. 맥·윈도우·안드로이드의 Chrome이나 Edge(또는 최신 Firefox)에서 열면 연결됩니다. 지금은 "마이크 듣기"나 화면 건반으로 연습하세요.');
+    return;
+  }
+  if(midiAccess){bindMidi();return;}   // 이미 연결돼 있으면 목록만 새로고침
+  try{
+    midiAccess=await navigator.requestMIDIAccess({sysex:false});
+    // 건반을 꽂거나 뺄 때 자동으로 다시 연결
+    midiAccess.onstatechange=bindMidi;
+    bindMidi();
+  }catch(err){
+    midiAccess=null;
+    setStatus(err&&(err.name==='SecurityError'||err.name==='NotAllowedError')
+      ?'MIDI 사용이 막혀 있어요. 다른 사이트 화면 안(프레임)에서 열렸거나, https가 아닌 주소이거나, 권한을 거부한 경우예요. 이 HTML을 https 주소로 올려 직접 열고, 권한 창에서 허용을 눌러 주세요. 화면 건반은 지금도 쓸 수 있어요.'
+      :`MIDI 요청 실패. 진단: ${diag('midi',err)}`);
+  }
+}
+/* [아이패드 수정] 입력 포트 목록 순회를 견고하게.
+   표준은 Map 형태(inputs.values())지만, iOS용 MIDI 브라우저 앱의 구현은
+   forEach가 제대로 안 되거나 배열/옛 스펙(inputs() 함수)인 경우가 있어 여러 형태를 다 처리한다. */
+function eachInput(fn){
+  if(!midiAccess)return;
+  let ins=midiAccess.inputs;
+  if(typeof ins==='function'){try{ins=ins.call(midiAccess);}catch(e){return;}}   // 옛 스펙
+  if(!ins)return;
+  if(Array.isArray(ins)){ins.forEach(fn);return;}
+  if(typeof ins.values==='function'){
+    const it=ins.values();
+    if(Array.isArray(it)){it.forEach(fn);return;}
+    if(it&&typeof it.next==='function'){let r;while(!(r=it.next()).done)fn(r.value);return;}
+  }
+  if(typeof ins.forEach==='function'){ins.forEach(v=>fn(v));return;}
+  Object.keys(ins).forEach(k=>fn(ins[k]));
+}
+/* 연결된 모든 입력 포트에 메시지 처리기를 붙이고 상태 표시 */
+function bindMidi(){
+  const names=[];
+  eachInput(inp=>{
+    if(!inp||inp.state==='disconnected')return;
+    inp.onmidimessage=onMidi;
+    names.push(inp.name||'이름 없는 장치');
+  });
+  // 장치가 빠졌으면 눌린 채로 남은 음(걸린 음) 정리
+  if(!names.length&&midiSet.size){midiSet.forEach(m=>noteOff(m));midiSet.clear();evaluate();}
+  $('midiBtn').classList.toggle('on',names.length>0);
+  setStatus(names.length?`MIDI 연결됨: ${names.join(', ')}`
+    :(IS_IOS?'MIDI 장치를 찾지 못했어요. USB 건반은 USB-C(또는 라이트닝-USB 카메라 어댑터)로 꽂고, 블루투스 건반은 앱의 Bluetooth MIDI 설정에서 먼저 연결해 주세요. 연결되면 자동으로 잡힙니다.'
+            :'MIDI 장치를 찾지 못했어요. 건반을 USB로 꽂고 잠시 기다리면 자동으로 잡힙니다.'));
+}
+/* MIDI 메시지 해석
+   상태바이트 상위 4비트: 0x90=Note On, 0x80=Note Off, 0xB0=컨트롤 체인지
+   (Note On인데 세기 0이면 Note Off로 취급하는 것이 MIDI 관례) */
+function onMidi(e){
+  const d=e&&e.data;if(!d||d.length<2)return;
+  const st=d[0],d1=d[1],d2=d.length>2?d[2]:0,cmd=st&0xf0;
+  if(cmd===0x90&&d2>0){midiSet.add(d1);if(S.midiSound)noteOn(d1,.35+d2/200);}
+  else if(cmd===0x80||(cmd===0x90&&d2===0)){midiSet.delete(d1);if(S.midiSound)noteOff(d1);}
+  else if(cmd===0xB0&&(d1===120||d1===123)){midiSet.forEach(m=>noteOff(m));midiSet.clear();}  // All Notes Off
+  else return;
+  evaluate();
+}
+
+/* =============================================================================
+   11. 마이크 음 인식
+   흐름: [마이크 듣기] 탭 → getUserMedia로 마이크 스트림 → MediaStreamSource → Analyser(FFT 16384)
+         → 매 화면 프레임(micLoop)마다 주파수 스펙트럼을 읽어 G2(43)~C7(96) 각 음의 세기 측정
+         → 너무 약한 음/배음으로 보이는 음 제거 → 상위 6개
+         → 여러 프레임 연속으로 잡힌 음만 micSet에 반영(깜빡임 방지) → evaluate()
+   ※ 아이패드: https(또는 localhost)에서만 마이크가 열린다. file:// 로 연 파일은 불가.
+   ============================================================================= */
+let micStream=null,micSrc=null,analyser=null,sink=null,fbuf=null,tbuf=null,micRaf=0,micBusy=false;const cnt=new Map();
+
+/* [아이패드 수정] 오디오 컨텍스트를 새로 만든다(샘플레이트가 마이크와 안 맞을 때 사용).
+   일부 브라우저(특히 Firefox, 일부 iOS)는 컨텍스트와 마이크의 샘플레이트가 다르면
+   createMediaStreamSource가 실패하거나 소리가 비어 들어온다. */
+function rebuildAudio(rate){
+  voices.forEach((v,m)=>noteOff(m,true));
+  try{if(ac)ac.close();}catch(e){}
+  ac=null;master=null;unlocked=false;
+  const C=window.AudioContext||window.webkitAudioContext;
+  try{ac=rate?new C({sampleRate:rate,latencyHint:'interactive'}):new C();}catch(e){ac=new C();}
+  master=ac.createGain();master.gain.value=.55;master.connect(ac.destination);
+  ensureAudio();
+  if(running)nextT=ac.currentTime+.1;   // 메트로놈이 돌고 있었으면 새 시계에 맞춤
+}
+/* 오류 이름별 한국어 안내 */
+function micErrorText(err){
+  const n=err&&err.name;
+  if(n==='NotAllowedError'||n==='PermissionDeniedError')
+    return IS_IOS
+      ?'마이크 권한이 거부됐어요. 주소창 왼쪽 "가가"(또는 ⋯) 메뉴 → 웹 사이트 설정 → 마이크를 "허용"으로 바꾸거나, 설정 앱 → Safari → 마이크에서 허용한 뒤 새로고침해 주세요. (MIDI 앱에서 열었다면 설정 앱에서 그 앱의 마이크 권한을 켜 주세요.)'
+      :'마이크 권한이 거부됐어요. 주소창의 자물쇠/카메라 아이콘에서 마이크를 허용한 뒤 새로고침해 주세요.';
+  if(n==='NotFoundError'||n==='DevicesNotFoundError')return '마이크를 찾지 못했어요. 마이크가 연결돼 있는지 확인해 주세요.';
+  if(n==='NotReadableError'||n==='TrackStartError')return '다른 앱(통화, 녹음, 화상회의 등)이 마이크를 쓰고 있어 열 수 없어요. 그 앱을 닫고 다시 눌러 주세요.';
+  if(n==='SecurityError')return '보안 때문에 마이크가 막혔어요. https 주소에서 직접 열어 주세요.';
+  return `마이크 요청 실패. 진단: ${diag('microphone',err)}`;
+}
+
+async function toggleMic(){
+  if(micOn){stopMic();return;}
+  if(micBusy)return;   // 권한 창이 떠 있는 동안 연타 방지
+  /* [아이패드 수정] 보안 컨텍스트 검사: iOS는 http:// 나 file:// 에서 navigator.mediaDevices 자체가 없다.
+     원래 코드는 이때 "이 브라우저에서는 마이크를 쓸 수 없어요"라고만 해서 원인을 알 수 없었다. */
+  if(window.isSecureContext===false||!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+    setStatus(location.protocol==='file:'
+      ?'파일로 직접 연 페이지(file://)에서는 아이패드가 마이크를 막아요. 이 HTML을 GitHub Pages·Netlify 같은 곳에 올려 https 주소로 열어 주세요.'
+      :(window.isSecureContext===false
+        ?'https가 아닌 주소(http://)에서는 마이크를 쓸 수 없어요. 주소를 https:// 로 열어 주세요.'
+        :'이 브라우저에서는 마이크를 쓸 수 없어요. 최신 Safari나 Chrome으로 열어 주세요.'));
+    return;
+  }
+  try{const fp=document.permissionsPolicy||document.featurePolicy;
+    if(fp&&fp.allowsFeature&&!fp.allowsFeature('microphone')){
+      setStatus('이 페이지는 다른 사이트 화면 안(프레임)에서 열려 있어 마이크가 막혀 있어요. 이 HTML을 https 주소로 올려 직접 열어 주세요. 화면 건반은 여기서도 그대로 쓸 수 있어요.');return;}
+  }catch(e){}
+
+  micBusy=true;
+  // [아이패드 수정] 1) 세션을 재생+녹음으로 → 2) 탭한 그 순간(사용자 동작 안)에 오디오 컨텍스트 깨우기
+  setSession('play-and-record');
+  ensureAudio();
+  try{
+    /* 음 인식에는 원음이 필요하므로 에코 제거·잡음 제거·자동 음량을 끈다.
+       [아이패드 수정] 일부 기기/브라우저가 이 조건을 거부(OverconstrainedError/TypeError)하면 {audio:true}로 재시도 */
+    try{
+      micStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
+    }catch(err){
+      if(err&&(err.name==='OverconstrainedError'||err.name==='TypeError'||err.name==='ConstraintNotSatisfiedError'))
+        micStream=await navigator.mediaDevices.getUserMedia({audio:true});
+      else throw err;
+    }
+  }catch(err){
+    micBusy=false;setSession('playback');setStatus(micErrorText(err));return;
+  }
+
+  try{
+    const track=micStream.getAudioTracks()[0];
+    const st=track&&track.getSettings?track.getSettings():{};
+    /* [아이패드 수정] iOS는 마이크를 켜는 순간 하드웨어 샘플레이트가 바뀔 수 있다.
+       컨텍스트와 마이크 샘플레이트가 다르면 새 컨텍스트로 교체(고정값을 쓰지 않고 실제 값에 맞춤) */
+    if(IS_IOS&&st.sampleRate&&Math.abs(st.sampleRate-ac.sampleRate)>1)rebuildAudio(st.sampleRate);
+    ensureAudio();   // getUserMedia 승인 뒤에는 iOS가 재생을 허용하므로 한 번 더 깨움
+    try{micSrc=ac.createMediaStreamSource(micStream);}
+    catch(e){rebuildAudio(st.sampleRate);micSrc=ac.createMediaStreamSource(micStream);}  // 샘플레이트 불일치 오류 대비
+    analyser=ac.createAnalyser();analyser.fftSize=16384;analyser.smoothingTimeConstant=.35;
+    micSrc.connect(analyser);
+    /* [아이패드 수정] Safari는 스피커(destination)까지 이어지지 않은 노드를 처리하지 않는 경우가 있어
+       볼륨 0짜리 게인을 거쳐 destination에 연결해 둔다 (소리는 안 나고, 하울링도 없음) */
+    sink=ac.createGain();sink.gain.value=0;analyser.connect(sink);sink.connect(ac.destination);
+    fbuf=new Float32Array(analyser.frequencyBinCount);tbuf=new Float32Array(2048);
+    /* [아이패드 수정] 전화가 오거나 다른 앱이 마이크를 가져가면 iOS가 트랙을 끝내거나 음소거한다 → 상태 알림 */
+    if(track){
+      track.onended=()=>{if(micOn){stopMic();setStatus('마이크가 끊겼어요(전화·다른 앱·화면 잠금 등). "마이크 듣기"를 다시 눌러 주세요.');}};
+      track.onmute=()=>{if(micOn)setStatus('마이크가 잠시 멈췄어요(다른 앱이 사용 중일 수 있어요). 돌아오면 자동으로 다시 들어요.');};
+      track.onunmute=()=>{if(micOn){ensureAudio();setStatus('마이크로 다시 듣는 중이에요.');}};
+    }
+  }catch(err){
+    micBusy=false;
+    if(micStream)micStream.getTracks().forEach(t=>t.stop());micStream=null;
+    setSession('playback');
+    setStatus(`마이크 소리를 분석기에 연결하지 못했어요. 진단: ${diag('microphone',err)}`);return;
+  }
+  micBusy=false;
+  micOn=true;$('micBtn').classList.add('on');$('micBtn').textContent='마이크 끄기';$('meter').hidden=false;
+  setStatus('마이크로 듣는 중이에요. 코드를 누르고 1초쯤 유지하면 인식한 음이 건반 아래쪽 금색 줄과 오선지에 표시됩니다.'+
+    (IS_IOS?' (아이패드에서 마이크가 켜져 있는 동안 앱 소리가 작게 들릴 수 있어요.)':''));
+  micLoop();
+}
+function stopMic(){
+  micOn=false;cancelAnimationFrame(micRaf);
+  if(micStream)micStream.getTracks().forEach(t=>{t.onended=null;t.stop();});
+  micStream=null;
+  try{if(micSrc)micSrc.disconnect();if(analyser)analyser.disconnect();if(sink)sink.disconnect();}catch(e){}
+  micSrc=analyser=sink=null;
+  setSession('playback');   // [아이패드 수정] 마이크를 끄면 다시 재생 전용 세션으로 (스피커 음량 복구)
+  micSet.clear();cnt.clear();
+  $('micBtn').classList.remove('on');$('micBtn').textContent='마이크 듣기';$('meter').hidden=true;
+  setStatus('마이크를 껐어요.');evaluate();
+}
+/* 배음 간격(반음): 옥타브(12), 옥타브+5도(19), 2옥타브(24) … — 이런 위치의 약한 피크는 배음으로 보고 버림 */
+const HARM=[12,19,24,28,31,34,36];
+function micLoop(){
+  if(!micOn||!analyser)return;
+  micRaf=requestAnimationFrame(micLoop);   // 화면 주사율(보통 60Hz, 저전력 모드 30Hz)로 반복
+  // 1) 음량(RMS) 계산 → 음량 막대
+  analyser.getFloatTimeDomainData(tbuf);
+  let sum=0;for(let i=0;i<tbuf.length;i++)sum+=tbuf[i]*tbuf[i];
+  const rms=Math.sqrt(sum/tbuf.length);
+  $('meter').firstElementChild.style.width=Math.min(100,rms*600)+'%';
+  // 2) 스펙트럼(dB) 읽기 → 각 음 주파수 ±반음의 40% 범위에서 최댓값
+  analyser.getFloatFrequencyData(fbuf);
+  const binHz=ac.sampleRate/analyser.fftSize,mags=[];let max=-Infinity;   // 실제 샘플레이트 사용(고정값 아님)
+  for(let m=43;m<=96;m++){
+    const f=440*Math.pow(2,(m-69)/12);
+    const lo=Math.max(1,Math.floor(f/1.0234/binHz)),hi=Math.min(fbuf.length-1,Math.ceil(f*1.0234/binHz));
+    let pk=-Infinity;for(let i=lo;i<=hi;i++)if(fbuf[i]>pk)pk=fbuf[i];
+    mags[m]=pk;if(pk>max)max=pk;
+  }
+  // 3) 후보 고르기: 민감도가 높을수록 작은 소리도, 최대 피크보다 더 약한 음도 허용
+  const gate=.03/S.sens,range=10+S.sens*2;
+  const acc=[];
+  if(rms>gate){
+    for(let m=43;m<=96;m++){
+      const v=mags[m];
+      if(v<max-range||v<-85)continue;                     // 너무 약함
+      if(m<60&&((mags[m-1]!==undefined&&mags[m-1]>v)||(mags[m+1]!==undefined&&mags[m+1]>v)))continue; // 저음은 국소 최대만
+      if(acc.some(a=>HARM.includes(m-a)&&v<mags[a]+(((m-a)%12===0)?4:-1)))continue; // 아래 음의 배음으로 판단
+      acc.push(m);
+    }
+  }
+  // 4) 세기 상위 6개만
+  const top=new Set(acc.sort((a,b)=>mags[b]-mags[a]).slice(0,6));
+  // 5) 프레임 카운터로 안정화: 잡히면 +1(최대 8), 안 잡히면 -2. 4 이상이면 "들림"으로 확정
+  const next=new Set();
+  for(let m=43;m<=96;m++){
+    let c=cnt.get(m)||0;
+    c=top.has(m)?Math.min(c+1,8):Math.max(c-2,0);
+    cnt.set(m,c);
+    if(c>=4||(c>0&&micSet.has(m)))next.add(m);
+  }
+  // 6) 바뀐 경우에만 반영 → 채점
+  if(sig(next)!==sig(micSet)){micSet.clear();next.forEach(m=>micSet.add(m));evaluate();}
+}
+
+/* =============================================================================
+   12. 설정 시트 UI (폼 ↔ S 동기화)
+   ============================================================================= */
+const sheetBg=$('sheetBg');
+function openSheet(){syncForm();sheetBg.classList.add('open');$('closeSet').focus();}
+function closeSheet(){sheetBg.classList.remove('open');}
+$('setBtn').onclick=openSheet;$('closeSet').onclick=closeSheet;
+sheetBg.addEventListener('click',e=>{if(e.target===sheetBg)closeSheet();});   // 바깥 어두운 곳 탭하면 닫기
+
+/* 조성 목록과 코드 종류 칩 버튼을 만든다 */
+(function buildForm(){
+  const ks=$('keySel');ks.innerHTML='<option value="-1">아무 키 (랜덤)</option>'+KEYS.map((k,i)=>`<option value="${i}">${k.n} 메이저</option>`).join('');
+  $('typeBox').innerHTML=LEVELS.map(([lv,ts])=>`<div class="lvl">${lv}</div><div class="chips">${ts.map(t=>`<button type="button" class="chip" data-t="${t}" aria-pressed="false">C${CH[t].s}</button>`).join('')}</div>`).join('');
+  $('typeBox').addEventListener('click',e=>{
+    const b=e.target.closest('.chip');if(!b)return;const t=b.dataset.t;
+    if(S.types.includes(t)){if(S.types.length>1)S.types=S.types.filter(x=>x!==t);}else S.types.push(t);   // 최소 1개는 남김
+    changed(true);syncForm();
+  });
+})();
+/* S 값을 폼 컨트롤에 반영 */
+function syncForm(){
+  document.querySelectorAll('input[name=mode]').forEach(r=>r.checked=r.value===S.mode);
+  $('bpm').value=S.bpm;$('bpmVal').textContent=S.bpm;
+  $('bars').value=S.bars;$('meterSel').value=S.meter;$('keySel').value=S.key;
+  ['key7','inv','strictBass','hideNext','staffAns','names','keySound','midiSound','metroSound'].forEach(k=>$(k).checked=!!S[k]);
+  $('hint').value=S.hint;$('touch').value=S.touch;$('sens').value=S.sens;$('sensVal').textContent=S.sens;
+  document.querySelectorAll('.chip').forEach(c=>c.setAttribute('aria-pressed',S.types.includes(c.dataset.t)));
+}
+/* 설정 변경 후 공통 처리: 저장 → (필요하면 코드 다시 뽑기) → 화면 갱신 */
+function changed(regen){
+  save();
+  if(regen){nxt=pickChord(cur&&cur.id);if(cur&&!validFor(cur)){nxt=null;newChord();}}
+  applyMode();labelKeys();renderChord();evaluate();
+}
+function applyMode(){
+  $('runBtn').hidden=S.mode!=='metro';
+  $('clearBtn').hidden=S.touch!=='latch';
+  if(S.mode!=='metro'&&running)stopMetro();
+  renderBeats();
+}
+document.querySelectorAll('input[name=mode]').forEach(r=>r.addEventListener('change',()=>{S.mode=r.value;if(S.mode==='wait'){stopMetro();}changed(false);if(S.mode==='wait'){nxt=null;newChord();}}));
+$('bpm').addEventListener('input',e=>{S.bpm=+e.target.value;$('bpmVal').textContent=S.bpm;save();});
+$('bars').onchange=e=>{S.bars=+e.target.value;changed(false);};
+$('meterSel').onchange=e=>{S.meter=+e.target.value;changed(false);};
+$('keySel').onchange=e=>{S.key=+e.target.value;changed(true);};
+$('hint').onchange=e=>{S.hint=e.target.value;changed(false);};
+$('touch').onchange=e=>{S.touch=e.target.value;screen.clear();changed(false);};
+$('sens').addEventListener('input',e=>{S.sens=+e.target.value;$('sensVal').textContent=S.sens;save();});
+['key7','inv'].forEach(k=>$(k).onchange=e=>{S[k]=e.target.checked;changed(true);});
+['strictBass','hideNext','staffAns','names','keySound','midiSound','metroSound'].forEach(k=>$(k).onchange=e=>{S[k]=e.target.checked;changed(false);});
+
+/* =============================================================================
+   13. 버튼 연결
+   ============================================================================= */
+$('runBtn').onclick=()=>running?stopMetro():startMetro();
+$('skipBtn').onclick=()=>{if(!solved&&cur){ST.streak=0;renderStats();}newChord();};
+$('listenBtn').onclick=()=>playChord(cur);
+$('clearBtn').onclick=()=>{screen.clear();evaluate();};
+$('resetBtn').onclick=()=>{ST.ok=0;ST.bad=0;ST.times=[];ST.streak=0;renderStats();};
+$('midiBtn').onclick=connectMidi;
+$('micBtn').onclick=toggleMic;
+
+/* 타이머: 매 프레임 경과 시간 표시 */
+(function tick(){
+  requestAnimationFrame(tick);
+  if(cur&&!solved&&S.mode==='wait')$('timer').textContent=((performance.now()-t0)/1000).toFixed(1)+'초';
+  else if(S.mode==='metro'&&!solved)$('timer').textContent=running?'':'시작을 누르세요';
+})();
+
+/* 시작: 건반 만들기 → 모드 반영 → 첫 코드 → 통계 */
+buildKb();applyMode();newChord();renderStats();
+/* [아이패드 수정] 아이패드에서 MIDI가 안 되는 브라우저면 처음부터 안내 */
+if(IS_IOS&&!HAS_MIDI)setStatus('화면 건반이나 "마이크 듣기"로 연습해 보세요. 아이패드에서 MIDI 건반을 쓰려면 "MIDI (앱 필요)" 버튼을 눌러 방법을 확인하세요.');
+})();
+</script>
+</body>
+</html>
